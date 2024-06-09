@@ -11,6 +11,7 @@ import re
 dotenv.load_dotenv()
 
 SERVER_BACKLOG_MAX_CONNECTIONS = 5
+SERVER_RECV_BUFFER_SIZE = 4096
 
 active_threads = []
 shutdown_event = threading.Event()
@@ -23,11 +24,11 @@ class Templates(enum.Enum):
 
 def get_connection():
     return psycopg2.connect(**{
-        "dbname" : os.getenv("dbname"),
-        "user" : os.getenv("user"),
-        "password" : os.getenv("password"),
-        "host" : os.getenv("host"),
-        "port" : os.getenv("port")
+        "dbname" : os.getenv("db_name"),
+        "user" : os.getenv("db_user"),
+        "password" : os.getenv("db_password"),
+        "host" : os.getenv("db_host"),
+        "port" : os.getenv("db_port")
     })
 
 
@@ -90,13 +91,28 @@ def handle_packet(packet):
     return b"Dummy response"
 
 
+def receive_response(client_socket):
+    response = b""
+
+    while True:
+        part = client_socket.recv(SERVER_RECV_BUFFER_SIZE)
+        response += part
+
+        # there is no more data OR all data has been recieved already
+        if len(part) < SERVER_RECV_BUFFER_SIZE:
+            break
+
+    return response
+
+
 def handle_connection(client_socket):
     try:
         while not shutdown_event.is_set():
-            request = client_socket.recv(1024) # TODO: do some work to adjust this
+            request = receive_response(client_socket)
 
+            # nothing has been received
             if not request:
-                break # if no data is received
+                break
 
             response = handle_packet(request)
             client_socket.send(response)
@@ -107,7 +123,7 @@ def handle_connection(client_socket):
 def handle_signal(sig, frame):
     print("\nShutting down server gracefully...")
 
-    # Signal all threads to close and wait for all threads to finish
+    # signal all threads to close and wait for all threads to finish
     shutdown_event.set()
     for thread in active_threads:
         thread.join()
@@ -118,7 +134,7 @@ def handle_signal(sig, frame):
 def start_server(host, port):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((host, port))
+    server.bind((host, int(port)))
     server.listen(SERVER_BACKLOG_MAX_CONNECTIONS)
 
     print(f"BreadNet Domain Name Server is listening on -- {host}:{port}")
@@ -130,8 +146,10 @@ def start_server(host, port):
         while not shutdown_event.is_set():
             try:
                 client_sock, addr = server.accept()
+
+            # socket was closed by the signal handler
             except OSError:
-                break # Socket was closed by the signal handler
+                break
 
             print(f"Accepted connection from -- {addr}")
 
@@ -151,4 +169,7 @@ def start_server(host, port):
 
 
 if __name__ == "__main__":
-    start_server("0.0.0.0", 9999)
+    start_server(
+        os.getenv("dns_host"),
+        os.getenv("dns_port")
+    )
